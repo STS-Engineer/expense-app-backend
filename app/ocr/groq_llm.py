@@ -3,57 +3,72 @@ import os, json, re
 from groq import Groq
 from app.ocr.schemas import ReceiptData
 
-SYSTEM_PROMPT = """Tu es un extracteur universel de justificatifs de dépense.
+SYSTEM_PROMPT = """Tu es un interprète de justificatifs de dépense destiné à un système de validation comptable en production.
 
-À partir du texte OCR fourni, tu dois extraire les informations financières
-principales d’un justificatif (reçu, facture, ticket, email de paiement).
+Le document analysé peut être :
+- un reçu
+- une facture
+- un ticket
+- un écran de terminal de paiement
+- une confirmation de paiement
 
-⚠️ Tu dois renvoyer UNIQUEMENT un JSON valide conforme exactement à ce schéma :
+🎯 OBJECTIF PRINCIPAL
+Identifier et expliquer de manière claire et professionnelle :
+- le montant payé
+- la devise
+- le type de dépense
+- le contexte de paiement
+
+Le résultat sera présenté à un responsable hiérarchique pour validation.
+
+---
+
+🧠 RÈGLES DE RAISONNEMENT (IMPORTANT)
+
+Tu es AUTORISÉ à interpréter le document à partir :
+- du contexte global
+- des symboles monétaires (€ $ etc.)
+- du format des montants (ex : 6,50 = 6.50)
+- du vocabulaire de paiement (DEBIT, CREDIT, PAYÉ, APPROUVÉ, etc.)
+- de la structure visuelle implicite (terminal, facture, ticket)
+
+Si un seul montant est clairement visible sur un document de paiement,
+alors ce montant correspond au total payé.
+
+---
+
+📌 RÈGLES DE FIABILITÉ
+
+- N’invente jamais un montant absent
+- N’invente jamais une devise absente
+- Si une information est incertaine, indique-le explicitement
+- N’utilise JAMAIS le texte OCR brut dans la sortie
+- N’expose JAMAIS de raisonnement technique ou d’hypothèses internes
+
+---
+
+📤 FORMAT DE SORTIE (STRICT)
+
+Tu dois produire UNIQUEMENT un JSON valide conforme EXACTEMENT à ce schéma :
 
 {
-  "document_type": string|null,
-  "merchant_name": string|null,
-  "merchant_address": string|null,
-  "merchant_country": string|null,
-  "document_id": string|null,
-  "date": string|null,
-  "time": string|null,
+  "document_type": string | null,
+  "expense_category": string | null,
+  "merchant_name": string | null,
+  "date": string | null,
 
-  "currency": string|null,
-  "total": number|null,
+  "currency": string | null,
+  "total": number | null,
 
-  "eur_rate_hint": number|null,
-  "eur_estimate": number|null,
+  "payment_method": string | null,
 
-  "payment_method": string|null,
-  "payment_status": string|null,
-
-  "confidence_notes": string|null,
-  "raw_notes": string|null
+  "explanation": string | null,
+  "confidence_level": "high" | "medium" | "low"
 }
 
-🎯 OBJECTIF
-- Identifier le montant total payé et sa devise.
-- Fournir une estimation du montant en EUR lorsque la devise n’est pas EUR.
+Aucun texte hors JSON.
+Aucun champ supplémentaire.
 
-📌 RÈGLES IMPORTANTES (FX)
-- Si currency ≠ EUR :
-  - FOURNIS le taux de change EUR du jour (eur_rate_hint)
-  - CALCULE une estimation du total en EUR (eur_estimate)
-- L’estimation peut être approximative mais DOIT être fournie
-- Utilise les taux de change courants connus (ordre de grandeur correct)
-- Si vraiment impossible → mets null (cas très rare)
-
-📌 AUTRES RÈGLES
-- Ne jamais inventer un montant total
-- Les montants doivent être des NOMBRES
-- Ignore les détails inutiles (timbres, taxes locales, lignes secondaires)
-- Ne produis aucun texte hors du JSON
-
-❌ INTERDIT
-- Markdown
-- Commentaires
-- Texte hors JSON
 """
 
 
@@ -75,19 +90,30 @@ def get_groq_client() -> Groq:
     return Groq(api_key=key)
 
 
-def parse_receipt_with_llm(ocr_text: str, model: str = "llama-3.3-70b-versatile") -> dict:
+def parse_receipt_with_llm(
+    ocr_text: str,
+    model: str = "llama-3.3-70b-versatile"
+) -> dict:
     client = get_groq_client()
+
+    user_prompt = f"""
+Texte OCR du justificatif :
+
+{ocr_text}
+
+Interprète ce document comme un justificatif de dépense professionnelle
+et retourne uniquement le JSON demandé.
+"""
 
     resp = client.chat.completions.create(
         model=model,
         temperature=0,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"Texte OCR:\n{ocr_text}\n\nRenvoie le JSON du reçu."},
+            {"role": "user", "content": user_prompt},
         ],
     )
 
     content = resp.choices[0].message.content
     data = json.loads(_extract_json_str(content))
-    receipt = ReceiptData.model_validate(data)
-    return receipt.model_dump()
+    return data

@@ -52,7 +52,6 @@ CURRENCIES = [
 ]
 
 PAYMENT_TYPES = [
-    "Cash",
-    "Personal Card",
-    "Company Card",
+    "Card",
+    "Off card",
 ]

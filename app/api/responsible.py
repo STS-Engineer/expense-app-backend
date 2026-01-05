@@ -6,7 +6,8 @@ from fastapi.responses import Response
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from io import BytesIO
-
+from mimetypes import guess_type
+from uuid import UUID
 from app.db.session import get_db
 from app.models.expense_report import ExpenseReport, ExpenseReportStatus
 from app.models.expense_item import ExpenseItem
@@ -14,6 +15,8 @@ from app.models.attachment import Attachment
 from app.api.auth import get_current_user
 from app.core.roles import ROLE_EMPLOYEE
 from app.core.permissions import require_roles
+from fastapi.responses import FileResponse
+
 router = APIRouter(prefix="/api/responsible", tags=["responsible"])
 
 
@@ -63,7 +66,7 @@ def get_report_by_token(token: str, db: Session = Depends(get_db)):
                         "ocr_text": att.ocr_text,
                         "ocr_json": att.ocr_json,
                         # ✅ RESPONSIBLE-SAFE FILE URL
-                        "view_url": f"/api/responsible/reports/{token}/attachments/{att.id}/file",
+                        "view_url": f"/responsible/reports/{token}/attachments/{att.id}/file",
                     }
                     for att in item.attachments
                 ],
@@ -218,4 +221,41 @@ def download_report_pdf(
         headers={
             "Content-Disposition": "attachment; filename=expense_report.pdf"
         },
+    )
+@router.get("/reports/{token}/attachments/{attachment_id}/file")
+def responsible_view_attachment(
+    token: str,
+    attachment_id: UUID,
+    db: Session = Depends(get_db),
+):
+    # 1️⃣ Validate approval token
+    report = (
+        db.query(ExpenseReport)
+        .filter(ExpenseReport.approval_token == token)
+        .first()
+    )
+    if not report:
+        raise HTTPException(status_code=404, detail="Invalid or expired link")
+
+    # 2️⃣ Ensure attachment belongs to this report
+    attachment = (
+        db.query(Attachment)
+        .join(ExpenseItem)
+        .filter(
+            Attachment.id == attachment_id,
+            ExpenseItem.report_id == report.id,
+        )
+        .first()
+    )
+    if not attachment:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    media_type, _ = guess_type(attachment.filename)
+    media_type = media_type or attachment.content_type or "application/octet-stream"
+
+    return FileResponse(
+        path=attachment.file_path,
+        media_type=media_type,
+        filename=attachment.filename,
+        headers={"Content-Disposition": "inline"},
     )
